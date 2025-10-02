@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Modernized TorGhost - Tor network routing tool
-Modified by KP | Updated for modern Python practices
+TorGhost - Clean and Working Version
 """
 
 import os
@@ -9,527 +8,165 @@ import sys
 import subprocess
 import time
 import signal
-import logging
-from pathlib import Path
-from typing import Optional, List
-from dataclasses import dataclass
+from stem import Signal
+from stem.control import Controller
 
 
-@dataclass
-class Colors:
-    """ANSI color codes for terminal output"""
+class bcolors:
     BLUE = '\033[94m'
     GREEN = '\033[92m'
-    RED = '\033[91m'
+    RED = '\033[31m'
     YELLOW = '\033[93m'
-    PURPLE = '\033[95m'
-    CYAN = '\033[96m'
-    WHITE = '\033[97m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
     ENDC = '\033[0m'
-    BGRED = '\033[41m'
-    BGGREEN = '\033[42m'
+    BOLD = '\033[1m'
 
 
-class Logger:
-    """Enhanced logging utility"""
-    def __init__(self):
-        self.colors = Colors()
-        # Simple logging without file handler to avoid permission issues
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[logging.StreamHandler(sys.stdout)]
-        )
-        self.logger = logging.getLogger('torghost')
-
-    def _get_timestamp(self) -> str:
-        return time.strftime('%H:%M:%S')
-
-    def info(self, message: str):
-        timestamp = self._get_timestamp()
-        colored = f"{self.colors.GREEN}[{timestamp}] {message}{self.colors.ENDC}"
-        print(colored)
-        self.logger.info(message)
-
-    def warning(self, message: str):
-        timestamp = self._get_timestamp()
-        colored = f"{self.colors.YELLOW}[{timestamp}] {message}{self.colors.ENDC}"
-        print(colored)
-        self.logger.warning(message)
-
-    def error(self, message: str):
-        timestamp = self._get_timestamp()
-        colored = f"{self.colors.RED}[{timestamp}] {message}{self.colors.ENDC}"
-        print(colored)
-        self.logger.error(message)
-
-    def critical(self, message: str):
-        timestamp = self._get_timestamp()
-        colored = f"{self.colors.BGRED}{self.colors.WHITE}[{timestamp}] {message}{self.colors.ENDC}"
-        print(colored)
-        self.logger.critical(message)
+def t():
+    return "[" + time.strftime('%H:%M:%S') + "]"
 
 
-class TorGhost:
-    """Main TorGhost application"""
-    
-    def __init__(self):
-        self.log = Logger()
-        self.colors = Colors()
-        self.config = {
-            'torrc_path': Path("/etc/tor/torrc"),
-            'resolv_path': Path("/etc/resolv.conf"),
-            'non_tor_networks': [
-                "192.168.1.0/24",
-                "192.168.0.0/24",
-                "10.0.0.0/8",
-                "172.16.0.0/12"
-            ]
-        }
-        
-        # Tor configuration
-        self.tor_config = """## Configuration added by TorGhost
+def sigint_handler(signum, frame):
+    print('\nUser interrupt! Shutting down')
+    shutdown()
+
+
+def shutdown():
+    print(f"\n{t()} Shutting down torghost")
+    sys.exit()
+
+
+def logo():
+    os.system("clear")
+    print(f"{bcolors.RED}{bcolors.BOLD}")
+    print("""
+      _____           ____ _               _
+     |_   _|__  _ __ / ___| |__   ___  ___| |_
+       | |/ _ \| '__| |  _| '_ \ / _ \/ __| __|
+       | | (_) | |  | |_| | | | | (_) \__ \ |_
+       |_|\___/|_|   \____|_| |_|\___/|___/\__|
+    v2.0 - Koushik Pal
+    """)
+    print(f"{bcolors.ENDC}")
+
+
+def usage():
+    logo()
+    print("""
+    USAGE:
+        sudo torghost start   (start torghost)
+        sudo torghost stop    (stop torghost) 
+        sudo torghost switch  (switch IP)
+        torghost status       (show status)
+    """)
+    sys.exit()
+
+
+def get_ip():
+    try:
+        result = subprocess.run(['curl', '-s', 'https://api.ipify.org'], 
+                              capture_output=True, text=True)
+        return result.stdout.strip()
+    except:
+        return "Unknown"
+
+
+def start_torghost():
+    # Configure torrc
+    torrc_content = """
+## TorGhost Configuration
 VirtualAddrNetwork 10.0.0.0/10
 AutomapHostsOnResolve 1
 TransPort 9040
 DNSPort 53
 ControlPort 9051
 """
-        self.resolv_config = "nameserver 127.0.0.1\n"
-
-    def run_command(self, command: List[str]) -> bool:
-        """Execute shell command safely"""
-        try:
-            result = subprocess.run(
-                command, 
-                capture_output=True, 
-                text=True,
-                timeout=30
-            )
-            if result.returncode != 0:
-                self.log.error(f"Command failed: {' '.join(command)}")
-                self.log.error(f"Error: {result.stderr}")
-                return False
-            return True
-        except subprocess.TimeoutExpired:
-            self.log.error("Command timed out")
-            return False
-        except Exception as e:
-            self.log.error(f"Command error: {e}")
-            return False
-
-    def run_command_with_output(self, command: List[str]) -> Optional[str]:
-        """Execute command and return output"""
-        try:
-            result = subprocess.run(
-                command, 
-                capture_output=True, 
-                text=True,
-                timeout=30
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-            return None
-        except Exception as e:
-            self.log.error(f"Command error: {e}")
-            return None
-
-    def get_current_ip(self) -> Optional[str]:
-        """Get current public IP address"""
-        try:
-            # Use torproject.org check service
-            result = self.run_command_with_output([
-                'curl', '-s', 'https://check.torproject.org/api/ip'
-            ])
-            if result:
-                import json
-                data = json.loads(result)
-                return data.get('IP')
-            
-            # Fallback to ipify
-            result = self.run_command_with_output([
-                'curl', '-s', 'https://api.ipify.org'
-            ])
-            return result
-        except Exception as e:
-            self.log.error(f"Failed to get IP: {e}")
-            return None
-
-    def is_root(self) -> bool:
-        """Check if running as root"""
-        return os.geteuid() == 0
-
-    def display_banner(self):
-        """Display application banner"""
-        os.system("clear")
-        banner = f"""
-{self.colors.RED}{self.colors.BOLD}
-      _____           ____ _               _
-     |_   _|__  _ __ / ___| |__   ___  ___| |_
-       | |/ _ \\| '__| |  _| '_ \\ / _ \\/ __| __|
-       | | (_) | |  | |_| | | | | (_) \\__ \\ |_
-       |_|\\___/|_|   \\____|_| |_|\\___/|___/\\__|
     
-    v3.0 - Modern Python Edition
-    Koushik Pal | www.technicaldada.in
-{self.colors.ENDC}
-        """
-        print(banner)
-
-    def display_usage(self):
-        """Display usage information"""
-        self.display_banner()
-        usage = f"""
-{self.colors.CYAN}{self.colors.BOLD}USAGE:{self.colors.ENDC}
-
-    {self.colors.GREEN}sudo torghost start{self.colors.ENDC}    - Start Tor routing
-    {self.colors.GREEN}sudo torghost stop{self.colors.ENDC}     - Stop Tor routing
-    {self.colors.GREEN}sudo torghost switch{self.colors.ENDC}   - Switch Tor circuit
-    {self.colors.GREEN}torghost status{self.colors.ENDC}        - Show current status
-    {self.colors.GREEN}torghost ip{self.colors.ENDC}            - Show current IP
-
-{self.colors.YELLOW}Note: start, stop, and switch commands require root privileges{self.colors.ENDC}
-        """
-        print(usage)
-        sys.exit(1)
-
-    def setup_signal_handlers(self):
-        """Setup signal handlers for graceful shutdown"""
-        def signal_handler(signum, frame):
-            self.log.warning(f"Received signal {signum}, shutting down...")
-            self.stop_torghost()
-            sys.exit(0)
-
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-
-    def configure_torrc(self) -> bool:
-        """Configure torrc file"""
-        try:
-            if not self.config['torrc_path'].exists():
-                self.log.error("torrc file not found. Is Tor installed?")
-                return False
-
-            torrc_content = self.config['torrc_path'].read_text()
-            
-            if "## Configuration added by TorGhost" in torrc_content:
-                self.log.info("Torrc already configured")
-                return True
-
-            # Backup original torrc
-            backup_path = self.config['torrc_path'].with_suffix('.torrc.backup')
-            if not backup_path.exists():
-                import shutil
-                shutil.copy2(self.config['torrc_path'], backup_path)
-                self.log.info("Backed up original torrc file")
-
-            # Append configuration
-            with open(self.config['torrc_path'], 'a') as f:
-                f.write("\n" + self.tor_config)
-            
-            self.log.info("Torrc configured successfully")
-            return True
-
-        except Exception as e:
-            self.log.error(f"Failed to configure torrc: {e}")
-            return False
-
-    def configure_dns(self) -> bool:
-        """Configure DNS settings"""
-        try:
-            if not self.config['resolv_path'].exists():
-                self.log.error("resolv.conf not found")
-                return False
-
-            # Backup original resolv.conf
-            backup_path = self.config['resolv_path'].with_suffix('.resolv.conf.backup')
-            if not backup_path.exists():
-                import shutil
-                shutil.copy2(self.config['resolv_path'], backup_path)
-                self.log.info("Backed up original resolv.conf")
-
-            # Write new configuration
-            self.config['resolv_path'].write_text(self.resolv_config)
-            self.log.info("DNS configured to use Tor")
-            return True
-
-        except Exception as e:
-            self.log.error(f"Failed to configure DNS: {e}")
-            return False
-
-    def restore_dns(self) -> bool:
-        """Restore original DNS settings"""
-        try:
-            backup_path = self.config['resolv_path'].with_suffix('.resolv.conf.backup')
-            if backup_path.exists():
-                import shutil
-                shutil.copy2(backup_path, self.config['resolv_path'])
-                self.log.info("Restored original DNS configuration")
-                return True
-            else:
-                self.log.warning("No DNS backup found to restore")
-                return False
-        except Exception as e:
-            self.log.error(f"Failed to restore DNS: {e}")
-            return False
-
-    def setup_iptables(self) -> bool:
-        """Setup iptables rules for Tor routing"""
-        try:
-            # Get Tor user ID
-            tor_uid = self.run_command_with_output(['id', '-u', 'debian-tor'])
-            if not tor_uid:
-                self.log.error("Could not find Tor user ID. Is Tor installed?")
-                return False
-
-            # Flush existing rules
-            self.run_command(['iptables', '-F'])
-            self.run_command(['iptables', '-t', 'nat', '-F'])
-
-            # Set up NAT rules for Tor
-            rules = [
-                ['iptables', '-t', 'nat', '-A', 'OUTPUT', '-m', 'owner', '--uid-owner', tor_uid, '-j', 'RETURN'],
-                ['iptables', '-t', 'nat', '-A', 'OUTPUT', '-p', 'udp', '--dport', '53', '-j', 'REDIRECT', '--to-ports', '53'],
-                ['iptables', '-t', 'nat', '-A', 'OUTPUT', '-p', 'tcp', '--dport', '53', '-j', 'REDIRECT', '--to-ports', '53'],
-            ]
-
-            # Add exceptions for local networks
-            for network in self.config['non_tor_networks'] + ["127.0.0.0/8"]:
-                rules.append(['iptables', '-t', 'nat', '-A', 'OUTPUT', '-d', network, '-j', 'RETURN'])
-
-            # Redirect all other TCP traffic through Tor
-            rules.extend([
-                ['iptables', '-t', 'nat', '-A', 'OUTPUT', '-p', 'tcp', '--syn', '-j', 'REDIRECT', '--to-ports', '9040'],
-                ['iptables', '-A', 'OUTPUT', '-m', 'state', '--state', 'ESTABLISHED,RELATED', '-j', 'ACCEPT'],
-            ])
-
-            # Allow access to local networks
-            for network in self.config['non_tor_networks'] + ["127.0.0.0/8"]:
-                rules.append(['iptables', '-A', 'OUTPUT', '-d', network, '-j', 'ACCEPT'])
-
-            # Final rules
-            rules.extend([
-                ['iptables', '-A', 'OUTPUT', '-m', 'owner', '--uid-owner', tor_uid, '-j', 'ACCEPT'],
-                ['iptables', '-A', 'OUTPUT', '-j', 'REJECT']
-            ])
-
-            for rule in rules:
-                if not self.run_command(rule):
-                    self.log.error(f"Failed to execute: {' '.join(rule)}")
-                    return False
-
-            self.log.info("iptables rules configured")
-            return True
-
-        except Exception as e:
-            self.log.error(f"Failed to setup iptables: {e}")
-            return False
-
-    def flush_iptables(self) -> bool:
-        """Flush iptables rules"""
-        try:
-            flush_commands = [
-                ['iptables', '-P', 'INPUT', 'ACCEPT'],
-                ['iptables', '-P', 'FORWARD', 'ACCEPT'],
-                ['iptables', '-P', 'OUTPUT', 'ACCEPT'],
-                ['iptables', '-t', 'nat', '-F'],
-                ['iptables', '-t', 'mangle', '-F'],
-                ['iptables', '-F'],
-                ['iptables', '-X']
-            ]
-
-            for cmd in flush_commands:
-                self.run_command(cmd)
-
-            self.log.info("iptables rules flushed")
-            return True
-        except Exception as e:
-            self.log.error(f"Failed to flush iptables: {e}")
-            return False
-
-    def start_tor_service(self) -> bool:
-        """Start Tor service"""
-        try:
-            # Try different service management commands
-            commands_to_try = [
-                ['systemctl', 'start', 'tor'],
-                ['service', 'tor', 'start'],
-                ['/etc/init.d/tor', 'start']
-            ]
-
-            for cmd in commands_to_try:
-                if self.run_command(cmd):
-                    self.log.info("Tor service started")
-                    # Wait for Tor to be ready
-                    time.sleep(5)
-                    return True
-            
-            self.log.error("Failed to start Tor service")
-            return False
-
-        except Exception as e:
-            self.log.error(f"Failed to start Tor service: {e}")
-            return False
-
-    def stop_tor_service(self) -> bool:
-        """Stop Tor service"""
-        try:
-            commands_to_try = [
-                ['systemctl', 'stop', 'tor'],
-                ['service', 'tor', 'stop'],
-                ['/etc/init.d/tor', 'stop']
-            ]
-
-            for cmd in commands_to_try:
-                if self.run_command(cmd):
-                    self.log.info("Tor service stopped")
-                    return True
-            
-            self.log.warning("Could not stop Tor service using standard methods")
-            return False
-
-        except Exception as e:
-            self.log.error(f"Failed to stop Tor service: {e}")
-            return False
-
-    def start_torghost(self):
-        """Start TorGhost routing"""
-        if not self.is_root():
-            self.log.critical("This command must be run as root (use sudo)")
-            sys.exit(1)
-
-        self.log.info("Starting TorGhost...")
-
-        steps = [
-            ("Configuring torrc", self.configure_torrc),
-            ("Configuring DNS", self.configure_dns),
-            ("Starting Tor service", self.start_tor_service),
-            ("Setting up iptables rules", self.setup_iptables),
-        ]
-
-        for step_name, step_func in steps:
-            self.log.info(f"{step_name}...")
-            if not step_func():
-                self.log.error(f"Failed at step: {step_name}")
-                self.log.info("Rolling back changes...")
-                self.stop_torghost()
-                sys.exit(1)
-
-        self.log.info("TorGhost started successfully")
-        current_ip = self.get_current_ip()
-        if current_ip:
-            self.log.info(f"Current IP: {self.colors.GREEN}{current_ip}{self.colors.ENDC}")
-        else:
-            self.log.warning("Could not determine current IP")
-
-    def stop_torghost(self):
-        """Stop TorGhost and restore normal networking"""
-        self.log.info("Stopping TorGhost...")
-
-        # Flush iptables rules
-        self.flush_iptables()
-
-        # Restore DNS
-        self.restore_dns()
-
-        # Stop Tor service
-        self.stop_tor_service()
-
-        self.log.info("TorGhost stopped successfully")
-        
-        # Show current IP
-        current_ip = self.get_current_ip()
-        if current_ip:
-            self.log.info(f"Current IP: {self.colors.GREEN}{current_ip}{self.colors.ENDC}")
-
-    def switch_tor_circuit(self):
-        """Switch to a new Tor circuit"""
-        if not self.is_root():
-            self.log.critical("This command must be run as root (use sudo)")
-            sys.exit(1)
-
-        self.log.info("Requesting new Tor circuit...")
-        
-        try:
-            from stem.control import Controller
-            with Controller.from_port(port=9051) as controller:
-                controller.authenticate()
-                controller.signal(Signal.NEWNYM)
-                
-            # Wait for new circuit to be established
-            self.log.info("Waiting for new circuit...")
-            time.sleep(5)
-            
-            self.log.info("New Tor circuit established")
-            current_ip = self.get_current_ip()
-            if current_ip:
-                self.log.info(f"Current IP: {self.colors.GREEN}{current_ip}{self.colors.ENDC}")
-            else:
-                self.log.warning("Could not determine current IP")
-                
-        except Exception as e:
-            self.log.error(f"Failed to switch Tor circuit: {e}")
-            self.log.info("Make sure Tor is running and configured properly")
-
-    def show_status(self):
-        """Show current TorGhost status"""
-        # Check Tor service
-        tor_status = self.run_command_with_output(['systemctl', 'is-active', 'tor'])
-        if tor_status == "active":
-            self.log.info(f"Tor service: {self.colors.GREEN}RUNNING{self.colors.ENDC}")
-        else:
-            self.log.info(f"Tor service: {self.colors.RED}NOT RUNNING{self.colors.ENDC}")
-
-        # Show current IP
-        current_ip = self.get_current_ip()
-        if current_ip:
-            self.log.info(f"Current IP: {self.colors.GREEN}{current_ip}{self.colors.ENDC}")
-            
-            # Check if we're using Tor
-            if self.run_command_with_output(['curl', '-s', 'https://check.torproject.org']):
-                self.log.info(f"Tor check: {self.colors.GREEN}CONNECTED THROUGH TOR{self.colors.ENDC}")
-            else:
-                self.log.info(f"Tor check: {self.colors.YELLOW}DIRECT CONNECTION{self.colors.ENDC}")
-        else:
-            self.log.warning("Could not determine current IP")
-
-    def run(self):
-        """Main application entry point"""
-        self.setup_signal_handlers()
-        
-        if len(sys.argv) < 2:
-            self.display_usage()
-
-        command = sys.argv[1].lower()
-
-        command_map = {
-            'start': self.start_torghost,
-            'stop': self.stop_torghost,
-            'switch': self.switch_tor_circuit,
-            'status': self.show_status,
-            'ip': lambda: (
-                self.log.info(f"Current IP: {self.colors.GREEN}{self.get_current_ip() or 'Unknown'}{self.colors.ENDC}")
-            ),
-        }
-
-        if command in command_map:
-            if command in ['start', 'stop', 'switch']:
-                self.display_banner()
-            command_map[command]()
-        else:
-            self.log.error(f"Unknown command: {command}")
-            self.display_usage()
+    with open('/etc/tor/torrc', 'a') as f:
+        f.write(torrc_content)
+    
+    # Configure DNS
+    with open('/etc/resolv.conf', 'w') as f:
+        f.write("nameserver 127.0.0.1\n")
+    
+    # Start services
+    subprocess.run(['systemctl', 'start', 'tor'])
+    
+    # Setup iptables
+    tor_uid = subprocess.run(['id', '-u', 'debian-tor'], 
+                           capture_output=True, text=True).stdout.strip()
+    
+    iptables_script = f"""
+iptables -F
+iptables -t nat -F
+iptables -t nat -A OUTPUT -m owner --uid-owner {tor_uid} -j RETURN
+iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports 53
+iptables -t nat -A OUTPUT -p tcp --dport 53 -j REDIRECT --to-ports 53
+iptables -t nat -A OUTPUT -d 192.168.1.0/24 -j RETURN
+iptables -t nat -A OUTPUT -d 192.168.0.0/24 -j RETURN  
+iptables -t nat -A OUTPUT -d 127.0.0.0/8 -j RETURN
+iptables -t nat -A OUTPUT -p tcp --syn -j REDIRECT --to-ports 9040
+iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -d 192.168.1.0/24 -j ACCEPT
+iptables -A OUTPUT -d 192.168.0.0/24 -j ACCEPT
+iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
+iptables -A OUTPUT -m owner --uid-owner {tor_uid} -j ACCEPT
+iptables -A OUTPUT -j REJECT
+"""
+    
+    subprocess.run(['bash', '-c', iptables_script])
+    print(f"{t()} CURRENT IP: {bcolors.GREEN}{get_ip()}{bcolors.ENDC}")
 
 
-if __name__ == "__main__":
-    try:
-        app = TorGhost()
-        app.run()
-    except KeyboardInterrupt:
-        print(f"\n{Colors.RED}Operation cancelled by user{Colors.ENDC}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"{Colors.RED}Unexpected error: {e}{Colors.ENDC}")
-        sys.exit(1)
+def stop_torghost():
+    # Flush iptables
+    subprocess.run(['bash', '-c', """
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+iptables -t nat -F
+iptables -t mangle -F
+iptables -F
+iptables -X
+"""])
+    
+    # Restore network
+    subprocess.run(['systemctl', 'restart', 'NetworkManager'])
+    print(f"{t()} CURRENT IP: {bcolors.GREEN}{get_ip()}{bcolors.ENDC}")
+
+
+def switch_tor():
+    with Controller.from_port(port=9051) as controller:
+        controller.authenticate()
+        controller.signal(Signal.NEWNYM)
+    time.sleep(5)
+    print(f"{t()} CURRENT IP: {bcolors.GREEN}{get_ip()}{bcolors.ENDC}")
+
+
+def show_status():
+    ip = get_ip()
+    tor_status = subprocess.run(['systemctl', 'is-active', 'tor'], 
+                              capture_output=True, text=True).stdout.strip()
+    print(f"Tor Status: {tor_status}")
+    print(f"Current IP: {ip}")
+
+
+# Main execution
+signal.signal(signal.SIGINT, sigint_handler)
+
+if len(sys.argv) < 2:
+    usage()
+
+command = sys.argv[1].lower()
+
+if command == "start":
+    logo()
+    start_torghost()
+elif command == "stop":
+    logo()
+    stop_torghost()
+elif command == "switch":
+    switch_tor()
+elif command == "status":
+    show_status()
+else:
+    usage()
